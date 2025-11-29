@@ -1,0 +1,8 @@
+{
+  "name": "Coach Riley - AI Public Speaking Coach",
+  "description": "A high-stakes simulated video interview environment where an executive AI coach drills you on your communication skills.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
