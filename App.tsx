@@ -13,6 +13,7 @@ export default function App() {
     isProcessing: false,
     isSpeaking: false,
   });
+  const [micVolume, setMicVolume] = useState(0);
   
   // Track the current message being built by the stream to avoid flickering
   const [currentTranscript, setCurrentTranscript] = useState<{speaker: Speaker, text: string} | null>(null);
@@ -54,6 +55,10 @@ export default function App() {
       onClose: () => {
         setSessionState({ isActive: false, isProcessing: false, isSpeaking: false });
         audioPlayerRef.current?.stop();
+        setMicVolume(0);
+      },
+      onVolumeUpdate: (vol) => {
+          setMicVolume(vol);
       }
     });
 
@@ -68,6 +73,7 @@ export default function App() {
     audioPlayerRef.current?.stop();
     setSessionState({ isActive: false, isProcessing: false, isSpeaking: false });
     setCurrentTranscript(null);
+    setMicVolume(0);
   };
 
   const addMessageToHistory = (speaker: Speaker, text: string) => {
@@ -150,11 +156,11 @@ export default function App() {
                 {/* Coach Text Output - Reduced Font Size */}
                 <div className="text-center space-y-4 max-w-2xl min-h-[120px] px-4">
                     {sessionState.isActive && displayCoachText ? (
-                         <h2 className="text-lg md:text-xl font-medium text-gray-800 leading-relaxed tracking-tight animate-fade-in transition-all">
+                         <h2 className="text-base md:text-lg font-medium text-gray-800 leading-relaxed tracking-tight animate-fade-in transition-all">
                              "{displayCoachText}"
                          </h2>
                     ) : (
-                        <h2 className="text-lg md:text-xl text-gray-300 font-light">
+                        <h2 className="text-base md:text-lg text-gray-300 font-light">
                             {sessionState.isActive ? "Listening..." : "Start the session to begin your drill."}
                         </h2>
                     )}
@@ -168,12 +174,20 @@ export default function App() {
         {/* Bottom Status / Controls */}
         <div className="h-20 bg-white border-t border-gray-200 px-6 flex items-center justify-center shrink-0 relative z-20">
              {sessionState.isActive ? (
-                <div className="flex items-center gap-4 px-6 py-3 bg-gray-50 rounded-full border border-gray-100 shadow-sm">
-                    <div className={`w-2 h-2 rounded-full ${sessionState.isSpeaking ? 'bg-gray-400' : 'bg-red-500 animate-pulse'}`}></div>
+                <div className="flex items-center gap-4 px-6 py-3 bg-gray-50 rounded-full border border-gray-100 shadow-sm transition-all duration-300">
+                    {/* User Volume Indicator */}
+                    <div className="flex items-center gap-2 pr-3 border-r border-gray-200">
+                         <div className="flex items-end gap-0.5 h-4 w-4">
+                            <div className={`w-1 rounded-sm bg-green-500 transition-all duration-75 ${micVolume > 0.01 ? 'h-full' : 'h-1 opacity-20'}`}></div>
+                            <div className={`w-1 rounded-sm bg-green-500 transition-all duration-75 ${micVolume > 0.1 ? 'h-full' : 'h-1 opacity-20'}`}></div>
+                            <div className={`w-1 rounded-sm bg-green-500 transition-all duration-75 ${micVolume > 0.2 ? 'h-full' : 'h-1 opacity-20'}`}></div>
+                         </div>
+                    </div>
+
+                    <div className={`w-2.5 h-2.5 rounded-full ${sessionState.isSpeaking ? 'bg-blue-400' : 'bg-red-500 animate-pulse'}`}></div>
                     <span className="text-sm font-medium text-gray-600">
-                        {sessionState.isSpeaking ? "Coach is speaking" : "Mic is active - Speak now"}
+                        {sessionState.isSpeaking ? "Coach is speaking..." : "Listening to you..."}
                     </span>
-                    {/* Optional visual cue for user voice could go here */}
                 </div>
              ) : (
                  <div className="text-gray-400 text-sm">Session inactive</div>
@@ -183,6 +197,15 @@ export default function App() {
         {/* User Camera Overlay (PIP) */}
         <div className="absolute bottom-24 right-6 w-48 h-36 rounded-lg shadow-2xl z-30 overflow-hidden ring-1 ring-white/20">
             <UserCamera />
+            {/* Visualizer overlay on camera */}
+            {sessionState.isActive && micVolume > 0.01 && (
+                <div className="absolute bottom-1 right-1 left-1 h-1 bg-green-500/50 rounded-full overflow-hidden">
+                    <div 
+                        className="h-full bg-green-400 transition-all duration-75" 
+                        style={{ width: `${Math.min(micVolume * 500, 100)}%` }}
+                    />
+                </div>
+            )}
         </div>
       </div>
 

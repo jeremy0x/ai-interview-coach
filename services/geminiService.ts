@@ -1,4 +1,4 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { Message, Speaker } from "../types";
 import { float32ToPCM16 } from "../utils/audioUtils";
 
@@ -8,6 +8,9 @@ if (!apiKey) {
 }
 
 const ai = new GoogleGenAI({ apiKey: apiKey || 'dummy-key' });
+
+// LiveSession type is not exported by the SDK, so we infer it from the return type of connect()
+type LiveSession = Awaited<ReturnType<typeof ai.live.connect>>;
 
 const SYSTEM_INSTRUCTION = `
 You are Coach Riley, a high-stakes, executive-level public speaking coach. 
@@ -28,40 +31,60 @@ export type LiveSessionCallbacks = {
   onAudioData: (base64Data: string) => void;
   onTranscriptUpdate: (speaker: Speaker, text: string, isFinal: boolean) => void;
   onClose: () => void;
+  onVolumeUpdate: (volume: number) => void;
 };
 
 export class LiveSessionService {
-  private session: any = null;
+  private activeSession: LiveSession | null = null;
   private inputAudioContext: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private processor: ScriptProcessorNode | null = null;
   private callbacks: LiveSessionCallbacks;
+  private isConnected: boolean = false;
 
   constructor(callbacks: LiveSessionCallbacks) {
     this.callbacks = callbacks;
   }
 
   async connect() {
+    this.isConnected = true;
     try {
-      this.session = await ai.live.connect({
+      // Initialize Audio Context immediately to capture user gesture
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      this.inputAudioContext = new AudioContextClass({
+        sampleRate: 16000,
+      });
+
+      // Request permissions with Echo Cancellation to prevent feedback loops
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+
+      console.log("Audio Stream Acquired");
+
+      const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         callbacks: {
           onopen: async () => {
             console.log("Gemini Live Session Opened");
-            await this.startAudioStream();
+            // This callback is async, but we prepared resources already.
           },
-          onmessage: (message: any) => {
+          onmessage: (message: LiveServerMessage) => {
             this.handleMessage(message);
           },
           onclose: () => {
             console.log("Gemini Live Session Closed");
-            this.cleanup();
-            this.callbacks.onClose();
+            this.disconnect(); 
           },
-          onerror: (err: any) => {
+          onerror: (err: unknown) => {
             console.error("Gemini Live Session Error:", err);
-            this.cleanup();
-            this.callbacks.onClose();
+            this.disconnect();
           }
         },
         config: {
@@ -69,101 +92,105 @@ export class LiveSessionService {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: 'Fenrir' }, // Deep, authoritative male voice
+              prebuiltVoiceConfig: { voiceName: 'Fenrir' },
             },
           },
-          // Fix: These should be empty objects to enable the feature, not contain 'model'
           inputAudioTranscription: {},
           outputAudioTranscription: {}
         }
       });
+      
+      this.activeSession = await sessionPromise;
+
+      if (this.isConnected) {
+        await this.startAudioPipeline();
+      } else {
+        // If user cancelled while connecting
+        this.activeSession.close();
+      }
+
     } catch (error) {
       console.error("Failed to connect to Live API:", error);
-      this.callbacks.onClose();
+      this.disconnect();
     }
   }
 
-  private async startAudioStream() {
-    this.inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
-      sampleRate: 16000, // 16kHz required for optimal Gemini input
-    });
+  private async startAudioPipeline() {
+      if (!this.inputAudioContext || !this.stream || !this.activeSession) return;
 
-    try {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      // Check if context was cleaned up while waiting for permissions (Race condition fix)
-      if (!this.inputAudioContext) {
-          console.warn("Audio context was closed before stream could start.");
-          this.stream.getTracks().forEach(t => t.stop());
-          return;
+      // Ensure context is running (sometimes it suspends)
+      if (this.inputAudioContext.state === 'suspended') {
+        await this.inputAudioContext.resume();
       }
 
       const source = this.inputAudioContext.createMediaStreamSource(this.stream);
-      
-      // Reduced buffer size to 2048 for lower latency (approx 128ms)
-      this.processor = this.inputAudioContext.createScriptProcessor(2048, 1, 1);
+      this.processor = this.inputAudioContext.createScriptProcessor(4096, 1, 1);
       
       this.processor.onaudioprocess = (e) => {
+        if (!this.isConnected || !this.activeSession) return;
+        
         const inputData = e.inputBuffer.getChannelData(0);
+        
+        // Calculate volume for UI
+        let sumSquares = 0;
+        for (let i = 0; i < inputData.length; i++) {
+           sumSquares += inputData[i] * inputData[i];
+        }
+        const rms = Math.sqrt(sumSquares / inputData.length);
+        this.callbacks.onVolumeUpdate(rms);
+
         const base64Data = float32ToPCM16(inputData);
         
-        // Ensure session is active before sending
-        if (this.session) {
-          // Use the promise chain to ensure we don't send to a closed session if possible,
-          // though checking this.session is usually sufficient for the object existence.
-          this.session.sendRealtimeInput({
-            media: {
-              mimeType: 'audio/pcm;rate=16000',
-              data: base64Data
-            }
-          });
+        try {
+            this.activeSession.sendRealtimeInput({
+                media: {
+                mimeType: 'audio/pcm;rate=16000',
+                data: base64Data
+                }
+            });
+        } catch (err) {
+            console.error("Error sending audio frame:", err);
         }
       };
 
       source.connect(this.processor);
       this.processor.connect(this.inputAudioContext.destination);
-
-    } catch (err) {
-      console.error("Error accessing microphone:", err);
-      // Ensure we clean up if something failed partway
-      this.cleanup();
-      this.callbacks.onClose();
-    }
   }
 
-  private handleMessage(message: any) {
+  private handleMessage(message: LiveServerMessage) {
     const serverContent = message.serverContent;
 
-    // 1. Handle Audio Output
     if (serverContent?.modelTurn?.parts?.[0]?.inlineData?.data) {
       const audioData = serverContent.modelTurn.parts[0].inlineData.data;
       this.callbacks.onAudioData(audioData);
     }
 
-    // 2. Handle Model Transcription (What Coach is saying)
     if (serverContent?.outputTranscription?.text) {
         this.callbacks.onTranscriptUpdate(Speaker.Coach, serverContent.outputTranscription.text, false);
     }
 
-    // 3. Handle User Transcription (What User said)
     if (serverContent?.inputTranscription?.text) {
         this.callbacks.onTranscriptUpdate(Speaker.User, serverContent.inputTranscription.text, false);
-    }
-    
-    if (serverContent?.turnComplete) {
-       // Optional: Marker for turn completion
     }
   }
 
   async disconnect() {
+    this.isConnected = false;
+    
+    if (this.activeSession) {
+         try { 
+            this.activeSession.close(); 
+         } catch(e) {
+            console.debug("Session already closed");
+         }
+         this.activeSession = null;
+    }
+
     this.cleanup();
+    this.callbacks.onClose();
   }
 
   private cleanup() {
-    if (this.session) {
-       this.session = null; 
-    }
-    
     if (this.stream) {
       this.stream.getTracks().forEach(track => track.stop());
       this.stream = null;
@@ -178,7 +205,7 @@ export class LiveSessionService {
       try {
         this.inputAudioContext.close();
       } catch (e) {
-        // ignore if already closed
+        // ignore
       }
       this.inputAudioContext = null;
     }
