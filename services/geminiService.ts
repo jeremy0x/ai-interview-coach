@@ -72,12 +72,9 @@ export class LiveSessionService {
               prebuiltVoiceConfig: { voiceName: 'Fenrir' }, // Deep, authoritative male voice
             },
           },
-          inputAudioTranscription: {
-            model: "gemini-2.5-flash-native-audio-preview-09-2025" 
-          },
-          outputAudioTranscription: {
-             model: "gemini-2.5-flash-native-audio-preview-09-2025" 
-          }
+          // Fix: These should be empty objects to enable the feature, not contain 'model'
+          inputAudioTranscription: {},
+          outputAudioTranscription: {}
         }
       });
     } catch (error) {
@@ -93,16 +90,27 @@ export class LiveSessionService {
 
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Check if context was cleaned up while waiting for permissions (Race condition fix)
+      if (!this.inputAudioContext) {
+          console.warn("Audio context was closed before stream could start.");
+          this.stream.getTracks().forEach(t => t.stop());
+          return;
+      }
+
       const source = this.inputAudioContext.createMediaStreamSource(this.stream);
       
-      // Buffer size 4096 provides a good balance between latency and CPU usage
-      this.processor = this.inputAudioContext.createScriptProcessor(4096, 1, 1);
+      // Reduced buffer size to 2048 for lower latency (approx 128ms)
+      this.processor = this.inputAudioContext.createScriptProcessor(2048, 1, 1);
       
       this.processor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
         const base64Data = float32ToPCM16(inputData);
         
+        // Ensure session is active before sending
         if (this.session) {
+          // Use the promise chain to ensure we don't send to a closed session if possible,
+          // though checking this.session is usually sufficient for the object existence.
           this.session.sendRealtimeInput({
             media: {
               mimeType: 'audio/pcm;rate=16000',
@@ -117,6 +125,9 @@ export class LiveSessionService {
 
     } catch (err) {
       console.error("Error accessing microphone:", err);
+      // Ensure we clean up if something failed partway
+      this.cleanup();
+      this.callbacks.onClose();
     }
   }
 
@@ -131,8 +142,6 @@ export class LiveSessionService {
 
     // 2. Handle Model Transcription (What Coach is saying)
     if (serverContent?.outputTranscription?.text) {
-        // We receive chunks, but for simple UI we can just send them through. 
-        // The UI handles appending or updating.
         this.callbacks.onTranscriptUpdate(Speaker.Coach, serverContent.outputTranscription.text, false);
     }
 
@@ -152,8 +161,6 @@ export class LiveSessionService {
 
   private cleanup() {
     if (this.session) {
-       // No explicit close method documented on the promise wrapper immediately, 
-       // but we should stop sending data.
        this.session = null; 
     }
     
@@ -168,7 +175,11 @@ export class LiveSessionService {
     }
     
     if (this.inputAudioContext) {
-      this.inputAudioContext.close();
+      try {
+        this.inputAudioContext.close();
+      } catch (e) {
+        // ignore if already closed
+      }
       this.inputAudioContext = null;
     }
   }

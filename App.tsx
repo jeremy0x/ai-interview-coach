@@ -48,8 +48,6 @@ export default function App() {
                  return { speaker, text };
              }
              // Otherwise append or update
-             // Note: The API sends incremental text, sometimes accumulated, sometimes chunks. 
-             // Simple accumulation strategy:
              return { speaker, text: prev ? prev.text + text : text };
          });
       },
@@ -82,9 +80,6 @@ export default function App() {
     }]);
   };
   
-  // Effect to commit transcript when it gets too stale or session ends could be added here
-  // But for now we rely on speaker switching to commit.
-
   const displayCoachText = currentTranscript?.speaker === Speaker.Coach 
       ? currentTranscript.text 
       : messages.slice().reverse().find(m => m.speaker === Speaker.Coach)?.text;
@@ -155,11 +150,11 @@ export default function App() {
                 {/* Coach Text Output - Reduced Font Size */}
                 <div className="text-center space-y-4 max-w-2xl min-h-[120px] px-4">
                     {sessionState.isActive && displayCoachText ? (
-                         <h2 className="text-xl md:text-2xl font-medium text-gray-800 leading-relaxed tracking-tight animate-fade-in transition-all">
+                         <h2 className="text-lg md:text-xl font-medium text-gray-800 leading-relaxed tracking-tight animate-fade-in transition-all">
                              "{displayCoachText}"
                          </h2>
                     ) : (
-                        <h2 className="text-xl md:text-2xl text-gray-300 font-light">
+                        <h2 className="text-lg md:text-xl text-gray-300 font-light">
                             {sessionState.isActive ? "Listening..." : "Start the session to begin your drill."}
                         </h2>
                     )}
